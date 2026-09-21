@@ -1,0 +1,78 @@
+name: cpgames-bot
+
+x-app-common: &app-common
+  build:
+    context: .
+  image: cpgames-bot:local
+  restart: unless-stopped
+  env_file:
+    - path: .env
+      required: true
+      format: raw
+  volumes:
+    - cpgames-data:/app/data
+  networks:
+    - backend
+  depends_on:
+    postgres:
+      condition: service_healthy
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: true
+        format: raw
+    volumes:
+      - cpgames-postgres:/var/lib/postgresql/data
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER:-cpgames}\" -d \"$${POSTGRES_DB:-cpgames}\""]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  app:
+    <<: *app-common
+    # credentials.json is intentionally kept only on the VPS and is not copied
+    # into the Docker image. Running as root lets the container read the host
+    # file while it remains chmod 600 on the VPS.
+    user: "0:0"
+    working_dir: /app
+    command: ["python", "-m", "src.main"]
+    volumes:
+      - cpgames-data:/app/data
+      - ./credentials.json:/app/credentials.json:ro
+    ports:
+      - "80:8000"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3).read()"
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  # Optional Telethon worker for comments from @fabrica_igr.
+  telegram-parser:
+    <<: *app-common
+    profiles:
+      - telegram
+    user: "0:0"
+    working_dir: /app
+    command: ["python", "-m", "src.bot", "--watch"]
+    stop_grace_period: 20s
+
+networks:
+  backend:
+
+volumes:
+  cpgames-data:
+  cpgames-postgres:

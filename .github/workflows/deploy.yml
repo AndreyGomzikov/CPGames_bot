@@ -1,0 +1,132 @@
+name: Deploy production
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cpgames-production
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    if: >-
+      ${{
+        (github.event_name == 'workflow_dispatch') ||
+        (github.event.workflow_run.conclusion == 'success' &&
+         github.event.workflow_run.head_branch == 'main')
+      }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout tested main revision
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || 'main' }}
+
+      - name: Validate deployment secrets
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_DEPLOY_PATH: ${{ secrets.VPS_DEPLOY_PATH }}
+          VPS_SSH_PRIVATE_KEY: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
+          VPS_PASSWORD: ${{ secrets.VPS_PASSWORD }}
+          VPS_KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          for name in VPS_HOST VPS_USER VPS_DEPLOY_PATH VPS_KNOWN_HOSTS; do
+            test -n "${!name}" || { echo "Missing GitHub secret: $name" >&2; exit 1; }
+          done
+          if [ -z "$VPS_SSH_PRIVATE_KEY" ] && [ -z "$VPS_PASSWORD" ]; then
+            echo "Configure either VPS_SSH_PRIVATE_KEY or VPS_PASSWORD" >&2
+            exit 1
+          fi
+
+      - name: Configure SSH
+        env:
+          VPS_SSH_PRIVATE_KEY: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
+          VPS_KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$VPS_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+          if [ -n "$VPS_SSH_PRIVATE_KEY" ]; then
+            printf '%s\n' "$VPS_SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+            chmod 600 ~/.ssh/id_ed25519
+          else
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq sshpass
+          fi
+
+      - name: Upload application without server secrets
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_PORT: ${{ secrets.VPS_PORT }}
+          VPS_DEPLOY_PATH: ${{ secrets.VPS_DEPLOY_PATH }}
+          VPS_SSH_PRIVATE_KEY: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
+          VPS_PASSWORD: ${{ secrets.VPS_PASSWORD }}
+        run: |
+          set -euo pipefail
+          port="${VPS_PORT:-22}"
+          tar \
+            --exclude=.git \
+            --exclude=.env \
+            --exclude='*.session' \
+            --exclude='*.session-journal' \
+            --exclude=credentials.json \
+            --exclude=data \
+            -czf /tmp/cpgames-release.tar.gz .
+
+          if [ -n "$VPS_SSH_PRIVATE_KEY" ]; then
+            scp -P "$port" /tmp/cpgames-release.tar.gz \
+              "$VPS_USER@$VPS_HOST:/tmp/cpgames-release.tar.gz"
+            ssh_cmd=(ssh -p "$port" "$VPS_USER@$VPS_HOST")
+          else
+            export SSHPASS="$VPS_PASSWORD"
+            sshpass -e scp -P "$port" /tmp/cpgames-release.tar.gz \
+              "$VPS_USER@$VPS_HOST:/tmp/cpgames-release.tar.gz"
+            ssh_cmd=(sshpass -e ssh -p "$port" "$VPS_USER@$VPS_HOST")
+          fi
+
+          "${ssh_cmd[@]}" bash -s -- "$VPS_DEPLOY_PATH" <<'REMOTE'
+          set -euo pipefail
+          deploy_path="$1"
+          test -d "$deploy_path"
+          test -w "$deploy_path"
+          command -v python3 >/dev/null 2>&1 || {
+            echo "python3 is required on the VPS" >&2
+            exit 1
+          }
+          staging="$(mktemp -d)"
+          trap 'rm -rf "$staging" /tmp/cpgames-release.tar.gz' EXIT
+          tar -xzf /tmp/cpgames-release.tar.gz -C "$staging"
+          python3 "$staging/deploy/sync_release.py" "$staging" "$deploy_path"
+          chmod 755 "$deploy_path"/deploy/*.sh
+          REMOTE
+
+      - name: Deploy and verify
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_PORT: ${{ secrets.VPS_PORT }}
+          VPS_DEPLOY_PATH: ${{ secrets.VPS_DEPLOY_PATH }}
+          VPS_SSH_PRIVATE_KEY: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
+          VPS_PASSWORD: ${{ secrets.VPS_PASSWORD }}
+        run: |
+          set -euo pipefail
+          port="${VPS_PORT:-22}"
+          if [ -n "$VPS_SSH_PRIVATE_KEY" ]; then
+            ssh -p "$port" "$VPS_USER@$VPS_HOST" \
+              "cd '$VPS_DEPLOY_PATH' && ./deploy/deploy.sh"
+          else
+            export SSHPASS="$VPS_PASSWORD"
+            sshpass -e ssh -p "$port" "$VPS_USER@$VPS_HOST" \
+              "cd '$VPS_DEPLOY_PATH' && ./deploy/deploy.sh"
+          fi

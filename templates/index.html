@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CPGames — Комментарии VK и Telegram</title>
+    <style>
+        body { font-family: Arial, sans-serif; background-color: #f5f5f5; margin: 0; padding: 20px; }
+        .container { max-width: 1200px; margin: 0 auto; }
+        .header { background: #1a1a2e; color: white; padding: 20px; border-radius: 10px; display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
+        .header h1 { font-size: 20px; margin: 0; display: flex; align-items: center; gap: 10px; }
+        .header-stats { display: flex; gap: 15px; background: rgba(255,255,255,0.1); padding: 10px; border-radius: 8px; }
+        .stats-item { display: flex; align-items: center; gap: 5px; }
+        .stats-item .badge { background: #e0e0e0; color: #333; padding: 2px 10px; border-radius: 12px; font-size: 14px; font-weight: bold; }
+        .stats-item .badge.yellow { background: #ffc107; color: #333; }
+        .sync-btn { background: #4a69bd; color: white; border: none; padding: 10px 20px; border-radius: 8px; cursor: pointer; font-size: 16px; transition: 0.2s; }
+        .sync-btn:hover { background: #3b5998; }
+
+        .filters { display: flex; gap: 15px; margin-bottom: 20px; background: white; padding: 15px; border-radius: 10px; }
+        .filter-btn { border: none; padding: 8px 20px; border-radius: 20px; cursor: pointer; background: #f0f0f0; font-weight: 500; transition: 0.2s; }
+        .filter-btn:hover { background: #e0e0e0; }
+        .filter-btn.active { background: #1a1a2e; color: white; }
+        .filter-btn.active:hover { background: #2a2a4e; }
+        .filter-option { display: flex; align-items: center; gap: 8px; cursor: pointer; padding: 8px 15px; border-radius: 20px; background: #f8f9fa; border: 1px solid transparent; }
+        .filter-option.active { border-color: #1a1a2e; background: #fff; }
+        .dot { width: 12px; height: 12px; border-radius: 50%; display: inline-block; }
+        .dot.red { background: #e74c3c; }
+        .dot.green { background: #2ecc71; }
+
+        #commentsContainer { display: grid; grid-template-columns: 1fr; gap: 15px; }
+        .comment-card { background: white; padding: 15px; border-radius: 10px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); border-left: 4px solid #e74c3c; }
+        .comment-card.processed { border-left-color: #2ecc71; opacity: 0.7; }
+        .comment-header { display: flex; justify-content: space-between; margin-bottom: 10px; font-size: 14px; color: #666; }
+        .comment-author { font-weight: bold; color: #333; }
+        .comment-date { font-size: 12px; }
+        .comment-text { margin-bottom: 10px; line-height: 1.5; }
+        .comment-footer { display: flex; justify-content: space-between; align-items: center; font-size: 13px; }
+        .comment-link { color: #4a69bd; text-decoration: none; }
+        .comment-link:hover { text-decoration: underline; }
+        .empty-state { text-align: center; padding: 50px 20px; color: #888; }
+        .empty-state h2 { font-size: 24px; margin-bottom: 10px; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <!-- HEADER -->
+    <div class="header">
+        <h1>💬 CPGames — Комментарии VK и Telegram</h1>
+        <div class="header-stats">
+            <div class="stats-item">📊 Всего: <span class="badge" id="totalCount">0</span></div>
+            <div class="stats-item">🟡 Необработанные: <span class="badge yellow" id="unprocessedCount">0</span></div>
+        </div>
+        <button class="sync-btn" onclick="syncComments()">Синхронизировать</button>
+    </div>
+
+    <!-- FILTERS -->
+    <div class="filters">
+        <button class="filter-btn active" onclick="loadComments('all')">Все</button>
+        <div class="filter-option active" onclick="loadComments('unprocessed')">
+            <span class="dot red"></span> Необработанные
+        </div>
+        <div class="filter-option" onclick="loadComments('processed')">
+            <span class="dot green"></span> Обработанные
+        </div>
+    </div>
+
+    <!-- COMMENTS LIST -->
+    <div id="commentsContainer">
+        <div class="empty-state">
+            <h2>💬 Комментариев пока нет</h2>
+            <p>Нажмите «Синхронизировать», чтобы загрузить комментарии</p>
+        </div>
+    </div>
+</div>
+
+<script>
+    let currentStatus = 'unprocessed';
+
+    // Функция для обновления статистики (счетчиков наверху)
+    async function updateStats() {
+        try {
+            const response = await fetch('/api/stats');
+            const data = await response.json();
+            document.getElementById('totalCount').innerText = data.total_comments;
+            document.getElementById('unprocessedCount').innerText = data.unprocessed;
+        } catch (error) {
+            console.error("Ошибка загрузки статистики:", error);
+        }
+    }
+
+    // Функция для загрузки и отображения списка комментариев
+    async function loadComments(status = 'all') {
+        currentStatus = status;
+        const container = document.getElementById('commentsContainer');
+        container.innerHTML = '<div style="text-align:center; padding: 20px;">⏳ Загрузка комментариев...</div>';
+
+        // Формируем URL. Если статус "all", не добавляем параметры
+        let url = '/api/comments';
+        if (status !== 'all') {
+            url += `?status=${status}`;
+        }
+
+        try {
+            const response = await fetch(url);
+            if (!response.ok) {
+                throw new Error(`Ошибка сервера: ${response.status}`);
+            }
+            const data = await response.json();
+            
+            const comments = data.comments || [];
+            container.innerHTML = '';
+
+            if (comments.length === 0) {
+                container.innerHTML = `
+                    <div class="empty-state">
+                        <h2>💬 Комментариев пока нет</h2>
+                        <p>По выбранному фильтру ничего не найдено</p>
+                    </div>
+                `;
+                return;
+            }
+
+            // Отрисовка карточек
+            comments.forEach(comment => {
+                const card = document.createElement('div');
+                card.className = `comment-card ${comment.is_processed ? 'processed' : ''}`;
+                
+                // Форматирование даты
+                const date = comment.date ? new Date(comment.date).toLocaleString('ru-RU') : 'Неизвестно';
+                
+                // 🔥 НОВОЕ: Определяем источник (VK или Telegram)
+                const source = comment.source || 'vk';
+                const sourceBadge = source === 'telegram'
+                    ? `<span style="margin-left:10px; padding:2px 6px; border-radius:4px; font-size:12px; background:#6c5ce7; color:white;">Telegram</span>`
+                    : `<span style="margin-left:10px; padding:2px 6px; border-radius:4px; font-size:12px; background:#3498db; color:white;">VK</span>`;
+                
+                // 🔥 НОВОЕ: Меняем текст ссылки в зависимости от источника
+                const linkText = source === 'telegram' ? '🔗 Перейти в Telegram' : '🔗 Перейти к ВК';
+
+                card.innerHTML = `
+                    <div class="comment-header">
+                        <span class="comment-author">👤 ${comment.author_name || 'Неизвестный пользователь'}${sourceBadge}</span>
+                        <span class="comment-date">${date}</span>
+                    </div>
+                    <div class="comment-text">${comment.text || 'Нет текста'}</div>
+                    <div class="comment-footer">
+                        <span>❤️ ${comment.likes || 0}</span>
+                        <div>
+                            <a href="${comment.url || '#'}" target="_blank" class="comment-link">${linkText}</a>
+                            ${!comment.is_processed ? `<button onclick="markAsProcessed(${comment.id})" style="margin-left:10px; padding: 5px 10px; background:#2ecc71; color:white; border:none; border-radius:4px; cursor:pointer;">✅ Отметить готовым</button>` : ''}
+                        </div>
+                    </div>
+                `;
+                container.appendChild(card);
+            });
+
+        } catch (error) {
+            console.error("Ошибка загрузки комментариев:", error);
+            container.innerHTML = `<div class="empty-state" style="color:red;"><h2>❌ Ошибка загрузки</h2><p>${error.message}</p></div>`;
+        }
+    }
+
+    // Функция для отметки комментария обработанным
+    async function markAsProcessed(commentId) {
+        try {
+            const response = await fetch(`/api/comments/${commentId}/process`, { method: 'POST' });
+            if (response.ok) {
+                // Если успешно, перезагружаем текущий список
+                loadComments(currentStatus);
+                updateStats();
+            } else {
+                alert('Не удалось отметить комментарий как обработанный.');
+            }
+        } catch (error) {
+            console.error('Ошибка отправки запроса на обработку:', error);
+        }
+    }
+
+    // Функция для ручной синхронизации
+    async function syncComments() {
+        const btn = document.querySelector('.sync-btn');
+        btn.innerText = '⏳ Синхронизация...';
+        btn.disabled = true;
+
+        try {
+            const response = await fetch('/api/sync');
+            const data = await response.json();
+            if (data.success || data.message) {
+                // Обновляем статистику и список
+                await updateStats();
+                await loadComments(currentStatus);
+                alert(data.message || 'Синхронизация завершена!');
+            } else {
+                alert('Ошибка: ' + (data.error || 'Неизвестная ошибка'));
+            }
+        } catch (error) {
+            alert('Ошибка соединения с сервером при синхронизации.');
+        } finally {
+            btn.innerText = 'Синхронизировать';
+            btn.disabled = false;
+        }
+    }
+
+    // При загрузке страницы сразу загружаем данные
+    document.addEventListener('DOMContentLoaded', () => {
+        updateStats();
+        loadComments('unprocessed');
+    });
+</script>
+
+</body>
+</html>

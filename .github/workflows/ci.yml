@@ -1,0 +1,95 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+      - "feature/**"
+      - "Feature/**"
+  pull_request:
+    branches:
+      - main
+      - develop
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cpgames-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Compile Python files
+        run: |
+          python -m compileall -q src deploy/sync_release.py
+
+      - name: Run tests
+        run: pytest -q
+
+      - name: Check deployment scripts
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y shellcheck
+          test -f deploy/bootstrap_vps.sh
+          test -f deploy/create_env.sh
+          test -f deploy/deploy.sh
+          test -f deploy/verify_deployment.sh
+          test -f deploy/verify_database.sh
+          test -f deploy/prepare_postgres_env.sh
+          test -f deploy/authorize_telegram.sh
+          test -f deploy/server_preflight.sh
+          test -f deploy/sync_release.py
+          shellcheck deploy/*.sh
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Prepare non-secret CI environment
+        run: |
+          cp .env.example .env
+          printf '{}\n' > credentials.json
+
+      - name: Validate Docker Compose
+        run: docker compose config --quiet
+
+      - name: Build Docker image
+        run: docker build --pull -t cpgames-bot:ci .
+
+      - name: Smoke-test src.main container
+        run: |
+          cleanup() { docker rm -f cpgames-ci >/dev/null 2>&1 || true; }
+          trap cleanup EXIT
+          docker run --detach --name cpgames-ci \
+            --env BACKGROUND_WORKERS_ENABLED=false \
+            --publish 18000:8000 \
+            cpgames-bot:ci
+          for attempt in {1..20}; do
+            if curl --fail --silent http://127.0.0.1:18000/health; then
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs cpgames-ci
+          exit 1
