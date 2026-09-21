@@ -59,25 +59,14 @@ AUTO_CONFIGURE_VK_CALLBACK
 порт 443 / TLS
 ```
 
-Устаревшие исходные файлы VK Callback/Caddy удалены из production-проекта.
-
 ## Contabo VPS
 
-```text
-Хост:              161.97.72.91
-SSH-порт:          22
-Пользователь:      andrewgf1
-Путь развертывания: /var/sftp/cpgamesbot
-```
-
-Секреты среды выполнения хранятся только на VPS:
+Секреты среды выполнения хранятся только на VPS
 
 ```text
 /var/sftp/cpgamesbot/.env
 /var/sftp/cpgamesbot/credentials.json
 ```
-
-Они сохраняются при автоматическом развертывании и не должны добавляться в Git.
 
 ## Обязательная production-конфигурация
 
